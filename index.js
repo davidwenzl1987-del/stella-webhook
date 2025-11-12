@@ -1,70 +1,94 @@
-// index.js
-import express from "express";
-import cors from "cors";
-import { AccessToken } from "livekit-server-sdk";
-import dotenv from "dotenv";
+// src/index.js
 
-dotenv.config();
+require('dotenv').config();
+const express = require('express');
+const cors = require('cors');
+const { AccessToken, VideoGrant } = require('livekit-server-sdk');
 
 const app = express();
-app.use(express.json());
+const PORT = process.env.PORT || 3000;
+
+// === LiveKit config from env ===
+// LIVEKIT_HOST  → e.g. wss://your-project-id.livekit.cloud
+// LIVEKIT_API_KEY
+// LIVEKIT_API_SECRET
+const LIVEKIT_HOST = process.env.LIVEKIT_HOST;
+const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY;
+const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET;
+
+if (!LIVEKIT_HOST || !LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) {
+  console.warn(
+    '[WARN] LIVEKIT_HOST, LIVEKIT_API_KEY, or LIVEKIT_API_SECRET is not set. ' +
+      '/token will fail until these are configured.'
+  );
+}
+
 app.use(cors());
+app.use(express.json());
+
+// Simple health check
+app.get('/', (req, res) => {
+  res.send('Stella webhook running');
+});
 
 /**
  * Mint a LiveKit access token.
- * POST /token { "room": "stella-test", "identity": "stella-bot" }
- * Returns: { token, url }
+ *
+ * POST /token
+ * {
+ *   "room": "stella-test",
+ *   "identity": "stella-bot"
+ * }
+ *
+ * Response:
+ * {
+ *   "token": "<jwt>",
+ *   "url": "wss://your-project.livekit.cloud"
+ * }
  */
-app.post("/token", async (req, res) => {
+app.post('/token', (req, res) => {
   try {
-    const { room, identity } = req.body;
+    const { room, identity, metadata } = req.body || {};
 
     if (!room || !identity) {
       return res.status(400).json({
-        error: "Missing room or identity field.",
+        error: 'Both "room" and "identity" are required in the JSON body.',
       });
     }
 
-    const apiKey = process.env.LIVEKIT_API_KEY;
-    const apiSecret = process.env.LIVEKIT_API_SECRET;
-
-    if (!apiKey || !apiSecret) {
+    if (!LIVEKIT_API_KEY || !LIVEKIT_API_SECRET || !LIVEKIT_HOST) {
       return res.status(500).json({
-        error: "LiveKit API keys not configured on server.",
+        error:
+          'Server missing LIVEKIT_HOST / LIVEKIT_API_KEY / LIVEKIT_API_SECRET env vars.',
       });
     }
 
-    const livekitUrl = process.env.LIVEKIT_URL;
-
-    const at = new AccessToken(apiKey, apiSecret, {
+    // Create an access token
+    const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
       identity,
+      metadata: metadata ? JSON.stringify(metadata) : undefined,
     });
 
-    at.addGrant({
+    // Grant: allow this identity to join the given room
+    const grant = new VideoGrant({
       room,
       roomJoin: true,
-      canPublish: true,
-      canSubscribe: true,
-      canPublishSources: ["microphone"],
     });
 
-    const token = await at.toJwt();
+    at.addGrant(grant);
 
-    return res.json({
+    const token = at.toJwt();
+
+    res.json({
       token,
-      url: livekitUrl,
+      url: LIVEKIT_HOST,
     });
   } catch (err) {
-    console.error("Token error:", err);
-    res.status(500).json({ error: "Internal server error" });
+    console.error('[ERROR] /token failed:', err);
+    res.status(500).json({ error: 'Failed to create LiveKit token.' });
   }
 });
 
-app.get("/", (req, res) => {
-  res.send("Stella webhook running");
-});
-
-const port = process.env.PORT || 3000;
-app.listen(port, () => {
-  console.log(`Stella webhook running on port ${port}`);
+app.listen(PORT, () => {
+  console.log(`Stella webhook listening on port ${PORT}`);
 });
